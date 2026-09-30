@@ -19,7 +19,7 @@ if not os.path.exists("the-verdict.txt"):
     with open(file_path, "wb") as f:
         f.write(response.content)
 
-# 정규 표현식으로 토큰화하기
+# 파일 열어서 raw_text에 저장하기
 with open("the-verdict.txt", "r", encoding="utf-8") as f:
     raw_text = f.read()
 
