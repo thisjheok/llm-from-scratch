@@ -19,10 +19,6 @@ if not os.path.exists("the-verdict.txt"):
     with open(file_path, "wb") as f:
         f.write(response.content)
 
-# 파일 열어서 raw_text에 저장하기
-with open("the-verdict.txt", "r", encoding="utf-8") as f:
-    raw_text = f.read()
-
 # 바이트 페어 인코딩
 # 어휘사전에 없는 단어를 더 작은 부분단어나 개별 문자로 분할하여 처리할 수 있습니다. 
 tokenizer = tiktoken.get_encoding("gpt2")
