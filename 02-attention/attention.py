@@ -124,13 +124,126 @@ torch.manual_seed(789)
 sa_v2 = SelfAttention_v2(d_in, d_out)
 
 # 코잘 어텐션 마스크 적용하기
-queries = sa_v2.W_query(inputs)
-keys = sa_v2.W_key(inputs)
-attn_scores = queries @ keys.T
+batch = torch.stack((inputs, inputs), dim=0) # batch.shape = [2,6,3]
 
-attn_weights = torch.softmax(attn_scores / keys.shape[-1]**0.5, dim=-1)
+class CausalAttention(nn.Module):
 
-context_length = attn_scores.shape[0]
-mask_simple = torch.tril(torch.ones(context_length, context_length))
+    def __init__(self, d_in, d_out, context_length,
+                 dropout, qkv_bias=False):
+        super().__init__()
+        self.W_query = nn.Linear(d_in, d_out, bias=qkv_bias)
+        self.W_key = nn.Linear(d_in, d_out, bias=qkv_bias)
+        self.W_value = nn.Linear(d_in, d_out, bias=qkv_bias)
+        self.dropout = nn.Dropout(dropout)
+        self.register_buffer('mask', torch.triu(torch.ones(context_length, context_length), diagonal=1))
 
-masked_simple = attn_weights*mask_simple 
+    def forward(self, x):
+        b, num_tokens, d_in = x.shape
+        keys =  self.W_key
+        queries = self.W_query
+        values = self.W_value
+
+        attn_scores = queries @ keys.transpose(1,2)
+        attn_scores.masked_fill_(
+            self.mask.bool()[:num_tokens, :num_tokens], -torch.inf)
+        attn_weights = torch.softmax(
+            attn_scores / keys.shape[-1]**0.5, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+
+        context_vec = attn_weights @ values
+        return context_vec
+
+torch.manual_seed(123)
+
+context_length = batch.shape[1]
+ca = CausalAttention(d_in, d_out, context_length, 0.0)
+
+context_vecs = ca(batch)
+print(context_vecs)
+print("context_vecs.shape:", context_vecs.shape)
+
+# 멀티 헤드 어텐션으로 확장하기
+class MultiHeadAttentionWrapper(nn.Module):
+
+    def __init__(self, d_in, d_out, context_length, dropout, num_heads,qkv_bias = False):
+        super().__init__()
+        self.heads = nn.ModuleList(
+            [CausalAttention(d_in, d_out, context_length, dropout, qkv_bias)
+             for _  in range(num_heads)]
+        )
+
+    def forward(self, x):
+        return torch.cat([head(x) for head in self.heads], dim=-1)
+
+
+# MultiHeadAttention 클래스에서는 싱글 어텐션 헤드를 연결하지 않습니다.
+#  하나의 W_query, W_key, W_value 가중치 행렬을 만든다음 개별 어텐션 헤드를 위해 이 가중치를 개별 행렬로 분할합니다.
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_in, d_out, context_length, dropout, num_heads, qkv_bias=False):
+        super().__init__()
+        assert (d_out % num_heads == 0), \
+            "d_out은 num_heads로 나누어 떨어져야 합니다"
+
+        self.d_out = d_out
+        self.num_heads = num_heads
+        self.head_dim = d_out // num_heads # head 하나당 차원 수
+
+        self.W_query = nn.Linear(d_in, d_out, bias=qkv_bias)
+        self.W_key= nn.Linear(d_in, d_out, bias=qkv_bias)
+        self.W_value = nn.Linear(d_in, d_out, bias=qkv_bias)
+        self.out_proj = nn.Linear(d_out, d_out) # Linear 층을 사용해 헤드의 출력을 결합합니다.
+        self.dropout = nn.Dropout(dropout)
+        self.register_buffer(
+            "mask",
+            torch.triu(torch.ones(context_length, context_length),
+                       diagonal=1)
+        )
+
+    def forward(self, x):
+        b, num_tokens, d_in = x.shape
+        keys = self.W_key(x) # 크기: (b, num_tokens, d_out)
+        queries = self.W_query(x)
+        values = self.W_value(x)
+
+        # `num_heads` 차원을 추가함으로써 암묵적으로 행렬을 분할합니다.
+        #  그다음 마지막 차원을 `num_heads`에 맞춰 채웁니다: (b, num_tokens, d_out) -> (b, num_tokens, num_heads, head_dim)
+        keys = keys.view(b, num_tokens, self.head_dim)
+        values = values.view(b, num_tokens, self.num_heads, self.head_dim)
+        queries = queries.view(b, num_tokens, self.num_heads, self.head_dim)
+
+        # 전치: (b, num_tokens, num_heads, head_dim) -> (b, num_heads, num_tokens, head_dim)
+        keys = keys.transpose(1, 2)
+        queries = queries.transpose(1, 2)
+        values = values.transpose(1, 2)
+
+        # 셀프 어텐션 계산; 각 헤드에 대해 점곱을 수행합니다.
+        attn_scores = queries @ keys.transpose(2,3)
+
+        # 마스크를 불리언 타입으로 만들고 토큰 개수로 마스크를 자릅니다.
+        mask_bool = self.mask.bool()[:num_tokens, :num_tokens]
+
+        # 마스크를 사용해 어텐션 점수를 채웁니다.
+        attn_scores.masked_fill_(mask_bool, -torch.inf)
+
+        attn_weights = torch.softmax(attn_scores / keys.shape[-1]**0.5, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+
+        # 크기: (b, num_tokens, num_heads, head_dim)
+        context_vec = (attn_weights @ values).transpose(1, 2)
+
+        # 헤드를 결합합니다. self.d_out = self.num_heads * self.head_dim
+        context_vec = context_vec.contiguous().view(b, num_tokens, self.d_out)
+        context_vec = self.out_proj(context_vec) # 투영
+
+        return context_vec
+
+torch.manual_seed(123)
+batch_size, context_length, d_in = batch.shape
+d_out = 2
+mha = MultiHeadAttention(d_in, d_out, context_length, 0.0, num_heads=2)
+
+context_vecs = mha(batch)
+
+# 컴팩트하고 효율적인 구현이 필요하다면 파이토치의 torch.nn.MultiheadAttention 클래스를 쓰면 된다.
+# attn_scores = queries @ keys.transpose(2, 3)가 실행될 때 4차원 입력 텐서의 경우 마지막 두 차원 (num_tokens, head_dim)
+# 사이에서 행렬 곱셈을 수행하며, 이 연산을 개별 헤드에 반복한다.
