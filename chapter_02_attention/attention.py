@@ -177,7 +177,7 @@ class MultiHeadAttentionWrapper(nn.Module):
 
 
 # MultiHeadAttention 클래스에서는 싱글 어텐션 헤드를 연결하지 않습니다.
-#  하나의 W_query, W_key, W_value 가중치 행렬을 만든다음 개별 어텐션 헤드를 위해 이 가중치를 개별 행렬로 분할합니다.
+# 하나의 W_query, W_key, W_value 가중치 행렬을 만든다음 개별 어텐션 헤드를 위해 이 가중치를 개별 행렬로 분할합니다.
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_in, d_out, context_length, dropout, num_heads, qkv_bias=False):
         super().__init__()
