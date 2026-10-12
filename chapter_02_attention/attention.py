@@ -207,7 +207,7 @@ class MultiHeadAttention(nn.Module):
 
         # `num_heads` 차원을 추가함으로써 암묵적으로 행렬을 분할합니다.
         #  그다음 마지막 차원을 `num_heads`에 맞춰 채웁니다: (b, num_tokens, d_out) -> (b, num_tokens, num_heads, head_dim)
-        keys = keys.view(b, num_tokens, self.head_dim)
+        keys = keys.view(b, num_tokens, self.num_heads, self.head_dim)
         values = values.view(b, num_tokens, self.num_heads, self.head_dim)
         queries = queries.view(b, num_tokens, self.num_heads, self.head_dim)
 
